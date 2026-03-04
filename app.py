@@ -9,178 +9,170 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 st.set_page_config(page_title="B2B Client Risk Dashboard", layout="wide")
 st.title("B2B Client Risk & Churn Prediction Dashboard")
 
-# =========================
+# =============================
 # LOAD DATA
-# =========================
+# =============================
 @st.cache_data
 def load_data():
     return pd.read_csv("B2B_Client_Churn_5000.csv")
 
 df = load_data()
 
-# Fix column name issues (VERY IMPORTANT)
-df.columns = df.columns.str.strip()
-df.columns = df.columns.str.replace(" ", "_")
+# Clean column names
+df.columns = df.columns.str.strip().str.replace(" ", "_")
 
-st.write("Dataset Loaded Successfully")
+st.success("Dataset Loaded Successfully")
 
-# =========================
-# CHECK REQUIRED COLUMNS
-# =========================
-required_cols = [
-    "Monthly_Usage",
-    "Payment_Delay_Days",
-    "Contract_Length",
-    "Support_Tickets",
-    "Revenue",
-    "Renewal_Status",
-    "Region",
-    "Industry"
-]
+# Show column names (for safety)
+st.write("Available Columns:", list(df.columns))
 
-for col in required_cols:
-    if col not in df.columns:
-        st.error(f"Missing column: {col}")
-        st.stop()
+# =============================
+# AUTO DETECT NUMERIC COLUMNS
+# =============================
+numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
 
-# =========================
-# RISK SCORE LOGIC
-# =========================
+if len(numeric_cols) < 3:
+    st.error("Not enough numeric columns to calculate Risk Score")
+    st.stop()
+
+# Use first 3 numeric columns dynamically
+col1, col2, col3 = numeric_cols[:3]
+
+# =============================
+# RISK SCORE (Dynamic)
+# =============================
 df["Risk_Score"] = (
-    df["Payment_Delay_Days"] * 0.4 +
-    (100 - df["Monthly_Usage"]) * 0.3 +
-    (12 - df["Contract_Length"]) * 0.2 +
-    df["Support_Tickets"] * 0.1
+    df[col1] * 0.4 +
+    df[col2] * 0.3 +
+    df[col3] * 0.3
 )
 
+# Risk category
 def risk_category(score):
-    if score < 40:
+    if score < df["Risk_Score"].quantile(0.33):
         return "Low Risk"
-    elif score < 70:
+    elif score < df["Risk_Score"].quantile(0.66):
         return "Medium Risk"
     else:
         return "High Risk"
 
 df["Risk_Category"] = df["Risk_Score"].apply(risk_category)
 
-# =========================
-# SIDEBAR FILTERS
-# =========================
+# =============================
+# SIDEBAR FILTERS (Dynamic)
+# =============================
 st.sidebar.header("Filters")
 
-region = st.sidebar.multiselect("Region", df["Region"].unique())
-industry = st.sidebar.multiselect("Industry", df["Industry"].unique())
-risk = st.sidebar.multiselect("Risk Category", df["Risk_Category"].unique())
+cat_cols = df.select_dtypes(include="object").columns.tolist()
 
 filtered_df = df.copy()
 
-if region:
-    filtered_df = filtered_df[filtered_df["Region"].isin(region)]
-if industry:
-    filtered_df = filtered_df[filtered_df["Industry"].isin(industry)]
-if risk:
-    filtered_df = filtered_df[filtered_df["Risk_Category"].isin(risk)]
+for col in cat_cols[:2]:  # first two categorical columns
+    selected = st.sidebar.multiselect(col, df[col].unique())
+    if selected:
+        filtered_df = filtered_df[filtered_df[col].isin(selected)]
 
-# =========================
-# KPI SECTION
-# =========================
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("Total Clients", len(filtered_df))
-col2.metric("High Risk Clients",
-            len(filtered_df[filtered_df["Risk_Category"]=="High Risk"]))
-col3.metric("Average Revenue",
-            round(filtered_df["Revenue"].mean(),2))
-
-# =========================
-# MACHINE LEARNING
-# =========================
-df_ml = df.copy()
-df_ml["Renewal_Status"] = df_ml["Renewal_Status"].map({"Yes":1,"No":0})
-
-X = df_ml[[
-    "Monthly_Usage",
-    "Payment_Delay_Days",
-    "Contract_Length",
-    "Support_Tickets",
-    "Revenue"
-]]
-
-y = df_ml["Renewal_Status"]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+risk_filter = st.sidebar.multiselect(
+    "Risk Category", df["Risk_Category"].unique()
 )
 
-model = DecisionTreeClassifier(max_depth=4)
-model.fit(X_train, y_train)
+if risk_filter:
+    filtered_df = filtered_df[filtered_df["Risk_Category"].isin(risk_filter)]
 
-pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, pred)
+# =============================
+# KPI SECTION
+# =============================
+k1, k2, k3, k4 = st.columns(4)
 
-col4.metric("Model Accuracy", str(round(accuracy*100,2)) + "%")
+k1.metric("Total Clients", len(filtered_df))
+k2.metric("High Risk Clients",
+          len(filtered_df[filtered_df["Risk_Category"]=="High Risk"]))
+k3.metric("Average Risk Score",
+          round(filtered_df["Risk_Score"].mean(),2))
 
-# =========================
+# =============================
+# MACHINE LEARNING (Dynamic)
+# =============================
+if "Renewal_Status" in df.columns:
+
+    df_ml = df.copy()
+
+    if df_ml["Renewal_Status"].dtype == "object":
+        df_ml["Renewal_Status"] = df_ml["Renewal_Status"].map({"Yes":1,"No":0})
+
+    X = df_ml[numeric_cols]
+    y = df_ml["Renewal_Status"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    model = DecisionTreeClassifier(max_depth=4)
+    model.fit(X_train, y_train)
+
+    pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, pred)
+
+    k4.metric("Model Accuracy", str(round(accuracy*100,2)) + "%")
+
+    st.subheader("Confusion Matrix")
+
+    fig_cm, ax_cm = plt.subplots()
+    cm = confusion_matrix(y_test, pred)
+    ax_cm.imshow(cm)
+    ax_cm.set_xlabel("Predicted")
+    ax_cm.set_ylabel("Actual")
+    st.pyplot(fig_cm)
+
+else:
+    k4.metric("Model Accuracy", "N/A")
+
+# =============================
 # VISUALS
-# =========================
+# =============================
 st.subheader("Risk Category Distribution")
 
 fig1, ax1 = plt.subplots()
 filtered_df["Risk_Category"].value_counts().plot(kind="bar", ax=ax1)
 st.pyplot(fig1)
 
-st.subheader("Industry Wise Risk")
+st.subheader("Risk Score vs First Numeric Column")
 
 fig2, ax2 = plt.subplots()
-pd.crosstab(filtered_df["Industry"],
-            filtered_df["Risk_Category"]).plot(kind="bar", ax=ax2)
+ax2.scatter(filtered_df[col1], filtered_df["Risk_Score"])
+ax2.set_xlabel(col1)
+ax2.set_ylabel("Risk Score")
 st.pyplot(fig2)
 
-st.subheader("Revenue vs Risk Score")
-
-fig3, ax3 = plt.subplots()
-ax3.scatter(filtered_df["Revenue"], filtered_df["Risk_Score"])
-ax3.set_xlabel("Revenue")
-ax3.set_ylabel("Risk Score")
-st.pyplot(fig3)
-
-st.subheader("Confusion Matrix")
-
-fig4, ax4 = plt.subplots()
-cm = confusion_matrix(y_test, pred)
-ax4.imshow(cm)
-ax4.set_xlabel("Predicted")
-ax4.set_ylabel("Actual")
-st.pyplot(fig4)
-
-# =========================
-# TOP 20 HIGH RISK CLIENTS
-# =========================
+# =============================
+# TOP 20 HIGH RISK
+# =============================
 st.subheader("Top 20 High Risk Clients")
+
 top20 = filtered_df.sort_values(
     by="Risk_Score", ascending=False).head(20)
+
 st.dataframe(top20)
 
-# =========================
+# =============================
 # RETENTION STRATEGY
-# =========================
+# =============================
 st.subheader("AI-Based Retention Strategy")
 
 if st.button("Generate Retention Strategy"):
-    st.write("• Offer discount for clients with payment delay > 30 days")
-    st.write("• Assign dedicated account manager to high ticket clients")
-    st.write("• Offer long-term contract incentives")
-    st.write("• Loyalty rewards for high revenue clients")
-    st.write("• Engagement program for low usage clients")
+    st.write("• Offer targeted incentives to high-risk clients")
+    st.write("• Improve engagement programs")
+    st.write("• Assign dedicated support managers")
+    st.write("• Provide flexible contract renewal options")
 
-# =========================
+# =============================
 # RESPONSIBLE AI
-# =========================
+# =============================
 st.subheader("Ethical Implications")
 
 st.write("""
-• Predictive bias may impact certain industries or regions.
-• Labeling clients as 'High Risk' must be handled carefully.
-• Ensure data privacy and secure storage.
-• AI should support decisions, not replace human judgment.
+• AI models may contain hidden bias.
+• Risk labeling should not replace human judgment.
+• Client data must be protected.
+• Use predictive analytics responsibly.
 """)
